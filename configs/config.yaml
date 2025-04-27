@@ -5,7 +5,7 @@ video_source: "C:/Users/harsh/Desktop/samajh.ai/test.mp4"
 output_video: true
 
 # Detection Thresholds
-confidence_threshold: 0.5
+confidence_threshold: 0.8
 
 # Tracking Configuration
 max_lost_frames: 30

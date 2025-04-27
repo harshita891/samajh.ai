@@ -1,13 +1,12 @@
 import numpy as np
-
 class KalmanFilter:
-    def __init__(self, dt=1, process_noise=1e-2, measurement_noise=1e-1):
+    def __init__(self, dt=1, process_noise=1e-4, measurement_noise=1e-2):  # Adjusted noise values
         self.dt = dt
-        self.process_noise = process_noise
-        self.measurement_noise = measurement_noise
-
+        self.process_noise = process_noise  # Lowered process noise for smoother prediction
+        self.measurement_noise = measurement_noise  # Adjusted measurement noise
+        
         self.x = np.zeros((4, 1))  # [x, y, vx, vy]
-        self.P = np.eye(4) * 1000
+        self.P = np.eye(4) * 1000  # Initial uncertainty
 
         self.F = np.array([
             [1, 0, dt, 0],
@@ -21,8 +20,8 @@ class KalmanFilter:
             [0, 1, 0, 0]
         ])
 
-        self.R = np.eye(2) * measurement_noise
-        self.Q = np.eye(4) * process_noise
+        self.R = np.eye(2) * measurement_noise  # Measurement noise matrix
+        self.Q = np.eye(4) * process_noise  # Process noise matrix
 
     def predict(self):
         self.x = np.dot(self.F, self.x)
@@ -38,21 +37,22 @@ class KalmanFilter:
 
 
 class ObjectTracker:
-    def __init__(self, max_lost_frames=30):
+    def __init__(self, max_lost_frames=15, distance_threshold=25):  # Adjusted distance threshold
         self.trackers = {}
         self.lost_frames = {}
         self.max_lost_frames = max_lost_frames
+        self.distance_threshold = distance_threshold
         self.next_id = 0
 
     def add_object(self, initial_position):
         tracker = KalmanFilter()
         tracker.x[0] = initial_position[0]
         tracker.x[1] = initial_position[1]
-
         obj_id = self.next_id
         self.trackers[obj_id] = tracker
         self.lost_frames[obj_id] = 0
         self.next_id += 1
+        print(f"Added new object ID: {obj_id}")  # Debugging message
         return obj_id
 
     def update(self, detections):
@@ -87,21 +87,24 @@ class ObjectTracker:
                     min_distance = dist
                     best_id = obj_id
 
-            if best_id is not None and min_distance < 50:  # Threshold to match existing object
+            if best_id is not None and min_distance < self.distance_threshold:
                 self.trackers[best_id].update(np.array([[cx], [cy]]))
                 updated_objects[best_id] = bbox
                 self.lost_frames[best_id] = 0
                 assigned.add(best_id)
+                print(f"Updated object ID: {best_id}, Distance: {min_distance:.1f}")
             else:
                 new_id = self.add_object((cx, cy))
                 updated_objects[new_id] = bbox
+                print(f"Added new object ID: {new_id}, Distance: {min_distance:.1f}")
 
-        # Update lost frames
         for obj_id in list(self.trackers.keys()):
             if obj_id not in updated_objects:
                 self.lost_frames[obj_id] += 1
                 if self.lost_frames[obj_id] > self.max_lost_frames:
+                    print(f"Object ID {obj_id} removed (lost for {self.lost_frames[obj_id]} frames)")  # Debugging log
                     del self.trackers[obj_id]
                     del self.lost_frames[obj_id]
 
+        print(f"Active objects: {list(updated_objects.keys())}")
         return updated_objects
