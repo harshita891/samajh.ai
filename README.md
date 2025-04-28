@@ -25,10 +25,10 @@ This project implements a real-time object detection and tracking system using t
 
 1.  **Clone the Repository:**
     ```bash
-    git clone <REPOSITORY_URL>
-    cd <REPOSITORY_NAME>
+     git clone github.com/harshita891/samajh.ai
+     cd samajh.ai
     ```
-    *(Remember to replace `<REPOSITORY_URL>` and `<REPOSITORY_NAME>` with the actual values)*
+
 
 2.  **Download YOLOv8 ONNX Model:**
     Obtain a YOLOv8 ONNX model (e.g., `yolov8s.onnx`) from a source like [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) or convert a YOLOv8 model to ONNX format. Place the model in a `models/` directory at the project root:
