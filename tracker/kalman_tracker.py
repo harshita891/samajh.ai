@@ -1,107 +1,30 @@
+import cv2
 import numpy as np
+from typing import Dict, List, Tuple
+from utils.bbox_utils import get_box_center
 
-class KalmanFilter:
-    def __init__(self, dt=1, process_noise=1e-2, measurement_noise=1e-1):
-        self.dt = dt
-        self.process_noise = process_noise
-        self.measurement_noise = measurement_noise
+class KalmanTracker:
+    def __init__(self):
+        self.kalman_filters: Dict[int, cv2.KalmanFilter] = {}
 
-        self.x = np.zeros((4, 1))  # [x, y, vx, vy]
-        self.P = np.eye(4) * 1000
+    def update_kalman_filter(self, obj_id: int, box: List[float]) -> np.ndarray:
+        if obj_id not in self.kalman_filters:
+            kalman = cv2.KalmanFilter(6, 2)
+            kalman.measurementMatrix = np.array([[1,0,0,0,0,0],[0,1,0,0,0,0]], np.float32)
+            kalman.transitionMatrix = np.array([
+                [1,0,1,0,0.5,0],
+                [0,1,0,1,0,0.5],
+                [0,0,1,0,1,0],
+                [0,0,0,1,0,1],
+                [0,0,0,0,1,0],
+                [0,0,0,0,0,1]
+            ], np.float32)
+            kalman.processNoiseCov = np.eye(6, dtype=np.float32) * 0.03
+            self.kalman_filters[obj_id] = kalman
 
-        self.F = np.array([
-            [1, 0, dt, 0],
-            [0, 1, 0, dt],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1]
-        ])
+        center = get_box_center(box)
+        self.kalman_filters[obj_id].correct(np.array([[center[0]], [center[1]]], dtype=np.float32))
+        return self.kalman_filters[obj_id].predict()[:2]
 
-        self.H = np.array([
-            [1, 0, 0, 0],
-            [0, 1, 0, 0]
-        ])
-
-        self.R = np.eye(2) * measurement_noise
-        self.Q = np.eye(4) * process_noise
-
-    def predict(self):
-        self.x = np.dot(self.F, self.x)
-        self.P = np.dot(np.dot(self.F, self.P), self.F.T) + self.Q
-        return self.x
-
-    def update(self, z):
-        y = z - np.dot(self.H, self.x)
-        S = np.dot(self.H, np.dot(self.P, self.H.T)) + self.R
-        K = np.dot(np.dot(self.P, self.H.T), np.linalg.inv(S))
-        self.x = self.x + np.dot(K, y)
-        self.P = self.P - np.dot(K, np.dot(self.H, self.P))
-
-
-class ObjectTracker:
-    def __init__(self, max_lost_frames=30):
-        self.trackers = {}
-        self.lost_frames = {}
-        self.max_lost_frames = max_lost_frames
-        self.next_id = 0
-
-    def add_object(self, initial_position):
-        tracker = KalmanFilter()
-        tracker.x[0] = initial_position[0]
-        tracker.x[1] = initial_position[1]
-
-        obj_id = self.next_id
-        self.trackers[obj_id] = tracker
-        self.lost_frames[obj_id] = 0
-        self.next_id += 1
-        return obj_id
-
-    def update(self, detections):
-        updated_objects = {}
-
-        if len(self.trackers) == 0:
-            for bbox, score, class_id in detections:
-                cx = (bbox[0] + bbox[2]) / 2
-                cy = (bbox[1] + bbox[3]) / 2
-                obj_id = self.add_object((cx, cy))
-                updated_objects[obj_id] = bbox
-            return updated_objects
-
-        obj_ids = list(self.trackers.keys())
-        predicted_positions = []
-        for obj_id in obj_ids:
-            pred = self.trackers[obj_id].predict()
-            predicted_positions.append((obj_id, pred[0, 0], pred[1, 0]))
-
-        assigned = set()
-        for bbox, score, class_id in detections:
-            cx = (bbox[0] + bbox[2]) / 2
-            cy = (bbox[1] + bbox[3]) / 2
-            min_distance = float('inf')
-            best_id = None
-
-            for obj_id, pred_x, pred_y in predicted_positions:
-                if obj_id in assigned:
-                    continue
-                dist = np.sqrt((pred_x - cx)**2 + (pred_y - cy)**2)
-                if dist < min_distance:
-                    min_distance = dist
-                    best_id = obj_id
-
-            if best_id is not None and min_distance < 50:  # Threshold to match existing object
-                self.trackers[best_id].update(np.array([[cx], [cy]]))
-                updated_objects[best_id] = bbox
-                self.lost_frames[best_id] = 0
-                assigned.add(best_id)
-            else:
-                new_id = self.add_object((cx, cy))
-                updated_objects[new_id] = bbox
-
-        # Update lost frames
-        for obj_id in list(self.trackers.keys()):
-            if obj_id not in updated_objects:
-                self.lost_frames[obj_id] += 1
-                if self.lost_frames[obj_id] > self.max_lost_frames:
-                    del self.trackers[obj_id]
-                    del self.lost_frames[obj_id]
-
-        return updated_objects
+    def remove_filter(self, obj_id: int):
+        self.kalman_filters.pop(obj_id, None)

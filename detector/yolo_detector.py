@@ -1,67 +1,64 @@
-import onnx
-import onnxruntime as ort
 import cv2
 import numpy as np
+import onnxruntime as ort
+from typing import List, Tuple
+from utils.image_utils import preprocess, get_appearance_features
+from utils.bbox_utils import non_max_suppression
+from configs.settings import CONF_THRESHOLD, IOU_THRESHOLD, CLASSES
+import logging
 
-class YOLODetector:
-    def __init__(self, model_path='yolov5.onnx', confidence_threshold=0.5, device='cpu'):
-        """
-        Initializes the YOLO detector using an ONNX model.
-        
-        Args:
-            model_path (str): Path to the ONNX model file.
-            confidence_threshold (float): Confidence threshold for object detection.
-            device (str): 'cpu' or 'cuda' for selecting the computation device.
-        """
-        self.device = device
-        self.confidence_threshold = confidence_threshold
-        
-        # Load the ONNX model using ONNX Runtime
-        self.session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider' if device == 'cpu' else 'CUDAExecutionProvider'])
-        
-        # Get input/output names for later usage
+logger = logging.getLogger(__name__)
+
+class YOLOv8Detector:
+    def __init__(self, model_path: str):
+        try:
+            self.session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+            logger.info(f"Loaded model {model_path}")
+        except Exception as e:
+            logger.error(f"Failed to load model {model_path}: {e}")
+            raise
         self.input_name = self.session.get_inputs()[0].name
-        self.output_name = self.session.get_outputs()[0].name
+        self.input_shape = self.session.get_inputs()[0].shape[2:]
+        self.conf_threshold = CONF_THRESHOLD
+        self.iou_threshold = IOU_THRESHOLD
+        self.classes = CLASSES
 
-    def detect(self, frame):
-        """
-        Detects objects in the given frame.
-        
-        Args:
-            frame (numpy.ndarray): The input image frame to perform object detection on.
-            
-        Returns:
-            list: A list of detections in the form (x1, y1, x2, y2, confidence, class_id).
-        """
-        # Preprocess the frame for YOLO (assuming YOLOv5 preprocessing)
-        frame_resized = cv2.resize(frame, (640, 640))  # Resize to 640x640 (common input size for YOLO)
-        frame_resized = frame_resized / 255.0  # Normalize to [0, 1]
-        frame_resized = frame_resized.transpose(2, 0, 1)  # Change to CHW format
-        frame_resized = np.expand_dims(frame_resized, axis=0).astype(np.float32)  # Add batch dimension
+    def detect(self, image: np.ndarray) -> List[Tuple]:
+        try:
+            input_image, scale, orig_shape = preprocess(image)
+            outputs = self.session.run(None, {self.input_name: input_image})[0]
+            outputs = np.transpose(outputs, (0, 2, 1))
 
-        # Run inference using ONNX Runtime
-        inputs = {self.input_name: frame_resized}
-        outputs = self.session.run([self.output_name], inputs)
+            boxes, scores, class_ids = [], [], []
+            for pred in outputs[0]:
+                box = pred[:4]
+                cls_scores = pred[4:]
+                score = np.max(cls_scores)
+                if score < self.conf_threshold:
+                    continue
+                class_id = np.argmax(cls_scores)
+                cx, cy, w, h = box
+                x1 = (cx - w/2) / scale
+                y1 = (cy - h/2) / scale
+                x2 = (cx + w/2) / scale
+                y2 = (cy + h/2) / scale
+                boxes.append([x1, y1, x2, y2])
+                scores.append(score)
+                class_ids.append(class_id)
 
-        # Post-process the model outputs
-        detections = outputs[0]  # Assuming the first output is the detections
-        
-        # Print the output for debugging (shape and content)
-        print("Detection Output Shape:", detections.shape)
-        print("Detection Output (first example):", detections[0])
+            if boxes:
+                boxes = np.array(boxes)
+                scores = np.array(scores)
+                class_ids = np.array(class_ids)
+                indices = non_max_suppression(boxes, scores, class_ids, self.iou_threshold)
+                detections = [(
+                    boxes[i][0], boxes[i][1], boxes[i][2], boxes[i][3],
+                    scores[i], self.classes[class_ids[i]],
+                    get_appearance_features(image, boxes[i])
+                ) for i in indices]
+                return detections
+            return []
 
-        results = []
-        for detection in detections[0]:
-            # Print each detection for inspection
-            print("Detection Data:", detection)
-
-            # Assuming the output contains [x1, y1, x2, y2, confidence, cls_probabilities]
-            if len(detection) >= 6:  # Make sure there are enough values in the detection
-                x1, y1, x2, y2, conf = detection[:5]
-                cls_probabilities = detection[5:]
-                cls = np.argmax(cls_probabilities)  # Find the class with the highest probability
-                
-                if conf >= self.confidence_threshold:
-                    results.append((int(x1), int(y1), int(x2), int(y2), float(conf), cls))
-
-        return results
+        except Exception as e:
+            logger.error(f"Detection failed: {e}")
+            return []

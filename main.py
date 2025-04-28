@@ -1,107 +1,65 @@
 import cv2
-import yaml
 import time
-import os
-import torch
-from utils.logger import Logger
-from utils.drawing import Drawing
-from utils.presence_monitor import PresenceMonitor
-from detector.yolo_detector import YOLODetector
-from tracker.kalman_tracker import ObjectTracker
+import numpy as np
+from collections import deque
+import gc
+from detector.yolo_detector import YOLOv8Detector
+from tracker.object_history import ObjectHistory
+from utils.logger import setup_logger
+from utils.drawing import draw_detections, draw_fps
+from utils.presence_monitor import monitor_presence
+from configs.settings import CLEANUP_INTERVAL
 
-# Load Config
-with open('configs/config.yaml', 'r') as f:
-    config = yaml.safe_load(f)
+def main(video_source: str = '0', model_path: str = "models/yolov8s.onnx"):
+    logger = setup_logger()
+    try:
+        detector = YOLOv8Detector(model_path=model_path)
+        object_history = ObjectHistory()
 
-# Initialize Components
-logger = Logger(log_file=config['log_file'], enable_logging=config['enable_logging'])
-drawing = Drawing()
-presence_monitor = PresenceMonitor(
-    zone=(config['zone']['x1'], config['zone']['y1'], config['zone']['x2'], config['zone']['y2']),
-    max_lost_frames=config['max_lost_frames']
-)
-detector = YOLODetector(model_path="models/yolov8s1.onnx",
-                        confidence_threshold=config['confidence_threshold'],
-                        device='cuda' if torch.cuda.is_available() else 'cpu')
-tracker = ObjectTracker(max_lost_frames=config['max_lost_frames'])
+        cap = cv2.VideoCapture(int(video_source) if video_source.isdigit() else video_source)
+        if not cap.isOpened():
+            logger.error("Failed to open video source")
+            return
 
-# Setup Video
-cap = cv2.VideoCapture(config['video_source'])
-if not cap.isOpened():
-    raise IOError(f"Cannot open video source {config['video_source']}")
+        fps_history = deque(maxlen=30)
+        alert_active = False
+        alert_start_time = 0
+        missing_count = 0
 
-frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-fps = cap.get(cv2.CAP_PROP_FPS) or config['target_fps']
+        try:
+            while True:
+                start_time = time.time()
+                ret, frame = cap.read()
+                if not ret:
+                    logger.info("End of video stream")
+                    break
 
-if config['output_video']:
-    output_path = config['output_path']
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'XVID'), fps, (frame_width, frame_height))
-else:
-    out = None
+                detections = detector.detect(frame)
+                tracked_detections = object_history.assign_tracking_ids(detections, frame)
+                object_history.update_object_history(tracked_detections)
 
-prev_time = time.time()
-frame_count = 0
+                if object_history.frame_count % CLEANUP_INTERVAL == 0:
+                    object_history.cleanup_memory()
+                    gc.collect()
 
-while cap.isOpened():
-    ret, frame = cap.read()
-    if not ret:
-        break
+                frame, alert_active, missing_count = draw_detections(frame, object_history.object_history, alert_active, alert_start_time, missing_count, 0)
+                frame, alert_active, alert_start_time = monitor_presence(frame, missing_count, alert_active, alert_start_time)
+                fps = 1.0 / (time.time() - start_time)
+                fps_history.append(fps)
+                frame = draw_fps(frame, np.mean(fps_history))
 
-    detections = detector.detect(frame)
+                cv2.imshow("Advanced Object Tracker", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
-    formatted_detections = []
-    for det in detections:
-        bbox = det[:4]
-        score = det[4]
-        class_id = det[5]
-        if score >= config['min_new_object_score']:
-            formatted_detections.append((bbox, score, class_id))
+        finally:
+            cap.release()
+            cv2.destroyAllWindows()
+            gc.collect()
 
-    active_objects = tracker.update(formatted_detections)
-    events = presence_monitor.update(active_objects)
+    except Exception as e:
+        logger.error(f"Main loop failed: {e}")
+        raise
 
-    for event_type, obj_id in events:
-        text = f"{event_type.upper()} - ID {obj_id}"
-        logger.log_event(text)
-        print(text)  # 🔥 Console pe bhi print hoga
-
-    boxes = []
-    scores = []
-    class_ids = []
-    status_flags = []
-
-    for obj_id, bbox in active_objects.items():
-        boxes.append(bbox)
-        scores.append(1.0)  # Tracker doesn't have score, assume 1.0
-        class_ids.append(0)  # Dummy class
-        cx = (bbox[0] + bbox[2]) / 2
-        cy = (bbox[1] + bbox[3]) / 2
-        in_zone = (presence_monitor.zone[0] <= cx <= presence_monitor.zone[2]) and (presence_monitor.zone[1] <= cy <= presence_monitor.zone[3])
-        status_flags.append(in_zone)
-
-    frame = drawing.draw_zone(frame, presence_monitor.zone)
-    frame = drawing.draw_detections(frame, boxes, scores, class_ids, ["Object"], status_flags)
-
-    # FPS Calculation
-    frame_count += 1
-    if frame_count >= 10:
-        curr_time = time.time()
-        fps = frame_count / (curr_time - prev_time)
-        logger.log_fps(fps)
-        frame = drawing.draw_fps(frame, fps)
-        prev_time = curr_time
-        frame_count = 0
-
-    if out:
-        out.write(frame)
-
-    cv2.imshow('Real-Time Monitoring', frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-cap.release()
-if out:
-    out.release()
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    main()

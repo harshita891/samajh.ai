@@ -1,28 +1,19 @@
-class PresenceMonitor:
-    def __init__(self, zone, max_lost_frames=30):
-        self.zone = zone  # (x1, y1, x2, y2)
-        self.objects_in_zone = {}
-        self.max_lost_frames = max_lost_frames
-
-    def update(self, active_objects):
-        events = []
-
-        for obj_id, bbox in active_objects.items():
-            cx = (bbox[0] + bbox[2]) / 2
-            cy = (bbox[1] + bbox[3]) / 2
-
-            in_zone = (self.zone[0] <= cx <= self.zone[2]) and (self.zone[1] <= cy <= self.zone[3])
-
-            if obj_id not in self.objects_in_zone:
-                self.objects_in_zone[obj_id] = {'in_zone': in_zone, 'lost': 0}
-                if in_zone:
-                    events.append(('entered', obj_id))
-            else:
-                last_status = self.objects_in_zone[obj_id]['in_zone']
-                if in_zone and not last_status:
-                    events.append(('entered', obj_id))
-                elif not in_zone and last_status:
-                    events.append(('exited', obj_id))
-                self.objects_in_zone[obj_id]['in_zone'] = in_zone
-
-        return events
+import cv2
+import time
+from configs.settings import ALERT_DURATION
+import numpy as np
+from typing import Tuple    
+def monitor_presence(frame: np.ndarray, missing_count: int, alert_active: bool, alert_start_time: float) -> Tuple[np.ndarray, bool, float]:
+    h, w = frame.shape[:2]
+    if missing_count > 0:
+        alert_text = f"ALERT: {missing_count} OBJECT(S) MISSING!"
+        (text_width, text_height), _ = cv2.getTextSize(alert_text, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
+        cv2.putText(frame, alert_text, (w//2 - text_width//2, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, "CHECK AREA!", (w//2 - text_width//2 + 50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+        alert_active = True
+        alert_start_time = time.time()
+    elif alert_active and (time.time() - alert_start_time) < ALERT_DURATION:
+        cv2.putText(frame, "ALERT CLEARED", (w//2 - 100, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+    else:
+        alert_active = False
+    return frame, alert_active, alert_start_time

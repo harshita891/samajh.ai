@@ -2,9 +2,8 @@ import cv2
 import numpy as np
 from typing import Tuple
 from configs.settings import CONF_THRESHOLD
-from utils.logger import setup_logger
-import logging
-from typing import List
+import logging  
+from typing import List 
 def preprocess(image: np.ndarray, input_shape: Tuple[int, int]=(640, 640)) -> Tuple[np.ndarray, float, Tuple[int, int]]:
     h, w = image.shape[:2]
     scale = min(input_shape[0] / h, input_shape[1] / w)
